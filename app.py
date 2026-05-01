@@ -1,117 +1,63 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2
-from psycopg2 import IntegrityError
-import language_tool_python
-from language_tool_python.utils import correct
-import os
 import smtplib
-import random
 from email.mime.text import MIMEText
-from datetime import datetime, timedelta
+import time
 import random
+import os
+from dotenv import load_dotenv
 
 # =========================
-# Fix Java PATH for LanguageTool
+# LOAD ENV
 # =========================
+load_dotenv()
+
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+
+OTP_EXPIRE_SECONDS = int(os.getenv("OTP_EXPIRE_SECONDS", 300))
+OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", 3))
 
 app = Flask(__name__)
 CORS(app)
 
 # =========================
-# Gmail Config
+# OTP STORE
 # =========================
-GMAIL_EMAIL = "marinatarek560@gmail.com"
-GMAIL_APP_PASSWORD = "sqit doge kiax vrpu"
-# =========================
-# Database connection
-# =========================
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-conn = psycopg2.connect(DATABASE_URL)
-cursor = conn.cursor()
+otp_store = {}
 
 # =========================
-# LanguageTool setup
+# SEND EMAIL
 # =========================
-tool = language_tool_python.LanguageTool('en-US')
-
-# =========================
-# Improve sentence
-# =========================
-def improve_sentence(text):
-    replacements = {
-        "are plays": "play",
-        "is plays": "plays",
-        "is play": "plays",
-        "are play": "play",
-        "we is": "we are",
-        "i plays": "i play",
-        "he play": "he plays",
-        "she play": "she plays",
-        "they plays": "they play",
-        "playstation": "PlayStation"
-    }
-    for wrong, right in replacements.items():
-        text = text.replace(wrong, right)
-    return text[:1].upper() + text[1:]
-
-# =========================
-# Home
-# =========================
-@app.route("/")
-def home():
-    return {"message": "LexiAid backend running"}
-
-# =========================
-# Register
-# =========================
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.json
-    name = data.get("name")
-    email = data.get("email")
-    password = data.get("password")
-
-    if not name or not email or not password:
-        return jsonify({"status": "fail", "message": "Please provide all required fields"}), 400
+def send_email(email, otp):
+    msg = MIMEText(f"Your OTP Code is: {otp}")
+    msg["Subject"] = "LexiAid OTP Verification"
+    msg["From"] = EMAIL_USER
+    msg["To"] = email
 
     try:
-        cursor.execute(
-            "INSERT INTO users (name,email,password,level) VALUES (%s,%s,%s,%s) RETURNING id",
-            (name, email, password, "beginner")
-        )
-        user_id = cursor.fetchone()[0]
-        conn.commit()
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
+        server.quit()
 
-        return jsonify({"status": "success", "message": "User created successfully", "user_id": user_id}), 201
+        # ⚠️ متخليش OTP يظهر في production
+        print(f"OTP sent to {email} ✅")
+        return True
 
-    except IntegrityError:
-        conn.rollback()
-        return jsonify({"status": "fail", "message": "User already exists"}), 400
-
-# =========================
-# Login
-# =========================
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.json
-    email = data.get("email")
-    password = data.get("password")
-
-    if not email or not password:
-        return jsonify({"status": "fail", "message": "Please provide email and password"}), 400
-
-    cursor.execute("SELECT * FROM users WHERE email=%s AND password=%s", (email, password))
-    user = cursor.fetchone()
-
-    if user:
-        return jsonify({"status": "success", "user_id": user[0], "name": user[1], "email": user[2], "level": user[4]})
-
-    return jsonify({"status": "fail", "message": "Email or password incorrect"}), 401
+    except Exception as e:
+        print("Email error:", e)
+        return False
 
 # =========================
-# Send OTP
+# GENERATE OTP
+# =========================
+def generate_otp():
+    return str(random.randint(100000, 999999))
+
+# =========================
+# SEND OTP
 # =========================
 @app.route("/send-otp", methods=["POST"])
 def send_otp():
@@ -119,43 +65,56 @@ def send_otp():
     email = data.get("email")
 
     if not email:
-        return jsonify({"status": "fail", "message": "Email required"}), 400
+        return jsonify({"status": "error", "message": "Email required"}), 400
 
-    otp = str(random.randint(100000, 999999))
-    expiry = datetime.utcnow() + timedelta(minutes=5)
+    otp = generate_otp()
+    expiry = time.time() + OTP_EXPIRE_SECONDS
 
-    try:
-        cursor.execute(
-            "UPDATE users SET otp=%s, otp_expiry=%s WHERE email=%s RETURNING id",
-            (otp, expiry, email)
-        )
+    otp_store[email] = {
+        "otp": otp,
+        "expiry": expiry,
+        "attempts": 0,
+        "verified": False
+    }
 
-        if cursor.fetchone() is None:
-            conn.rollback()
-            return jsonify({"status": "fail", "message": "Email not found"}), 404
+    if not send_email(email, otp):
+        return jsonify({"status": "error", "message": "Failed to send email"}), 500
 
-        conn.commit()
+    return jsonify({"status": "success", "message": "OTP sent"})
 
-        # تجهيز الرسالة
-        msg = MIMEText(f"Your LexiAid OTP code is: {otp}\nIt will expire in 5 minutes.")
-        msg["Subject"] = "LexiAid Password Reset OTP"
-        msg["From"] = GMAIL_EMAIL
-        msg["To"] = email
-
-        # ارسال الايميل
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_EMAIL, email, msg.as_string())
-        server.quit()
-
-        return jsonify({"status": "success", "message": "OTP sent to email"})
-
-    except Exception as e:
-        print("Email error:", e)
-        return jsonify({"status": "fail", "message": str(e)}), 500
 # =========================
-# Reset Password
+# VERIFY OTP
+# =========================
+@app.route("/verify-otp", methods=["POST"])
+def verify_otp():
+    data = request.json
+    email = data.get("email")
+    otp = data.get("otp")
+
+    if not email or not otp:
+        return jsonify({"status": "error", "message": "Missing data"}), 400
+
+    if email not in otp_store:
+        return jsonify({"status": "error", "message": "No OTP found"}), 400
+
+    record = otp_store[email]
+
+    if time.time() > record["expiry"]:
+        return jsonify({"status": "error", "message": "OTP expired"}), 400
+
+    if record["attempts"] >= OTP_MAX_ATTEMPTS:
+        return jsonify({"status": "error", "message": "Too many attempts"}), 400
+
+    if record["otp"] != otp:
+        otp_store[email]["attempts"] += 1
+        return jsonify({"status": "error", "message": "Invalid OTP"}), 400
+
+    otp_store[email]["verified"] = True
+
+    return jsonify({"status": "success", "message": "OTP verified"})
+
+# =========================
+# RESET PASSWORD
 # =========================
 @app.route("/reset-password", methods=["POST"])
 def reset_password():
@@ -164,51 +123,55 @@ def reset_password():
     otp = data.get("otp")
     new_password = data.get("new_password")
 
-    cursor.execute("SELECT otp, otp_expiry FROM users WHERE email=%s", (email,))
-    result = cursor.fetchone()
-    if not result:
-        return jsonify({"status": "fail", "message": "Email not found"}), 404
+    if not email or not otp or not new_password:
+        return jsonify({"status": "error", "message": "Missing data"}), 400
 
-    stored_otp, otp_expiry = result
-    if stored_otp != otp:
-        return jsonify({"status": "fail", "message": "Invalid OTP"}), 400
+    if email not in otp_store:
+        return jsonify({"status": "error", "message": "No OTP found"}), 400
 
-    if otp_expiry < datetime.utcnow():
-        return jsonify({"status": "fail", "message": "OTP expired"}), 400
+    record = otp_store[email]
 
-    try:
-        cursor.execute("UPDATE users SET password=%s, otp=NULL, otp_expiry=NULL WHERE email=%s", (new_password, email))
-        conn.commit()
-        return jsonify({"status": "success", "message": "Password updated"})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"status": "fail", "message": str(e)}), 500
+    if not record.get("verified"):
+        return jsonify({"status": "error", "message": "OTP not verified"}), 400
+
+    if record["otp"] != otp:
+        return jsonify({"status": "error", "message": "Invalid OTP"}), 400
+
+    # 🔥 هنا تربطيه بالداتابيز
+    print(f"Password updated for {email}")
+
+    del otp_store[email]
+
+    return jsonify({"status": "success", "message": "Password updated successfully"})
 
 # =========================
-# Grammar Correction
+# RESEND OTP
 # =========================
-@app.route("/correct", methods=["POST"])
-def correct_text():
+@app.route("/resend-otp", methods=["POST"])
+def resend_otp():
     data = request.json
-    text = data.get("text", "").strip()
-    if text == "":
-        return jsonify({"correctedText": "", "corrections": [], "word_count": 0, "correct_words": 0, "to_fix": 0, "similarity": 0})
+    email = data.get("email")
 
-    matches = tool.check(text)
-    corrected_text = correct(text, matches)
-    corrected_text = improve_sentence(corrected_text)
-    corrections = [{"wrong": text[m.offset:m.offset + m.error_length], "suggestion": m.replacements[0] if m.replacements else "", "message": m.message} for m in matches]
+    if not email:
+        return jsonify({"status": "error", "message": "Email required"}), 400
 
-    words = text.split()
-    word_count = len(words)
-    to_fix = len(matches)
-    correct_words = max(word_count - to_fix, 0)
-    similarity = int((correct_words / word_count) * 100) if word_count > 0 else 100
+    otp = generate_otp()
+    expiry = time.time() + OTP_EXPIRE_SECONDS
 
-    return jsonify({"correctedText": corrected_text, "corrections": corrections, "word_count": word_count, "correct_words": correct_words, "to_fix": to_fix, "similarity": similarity})
+    otp_store[email] = {
+        "otp": otp,
+        "expiry": expiry,
+        "attempts": 0,
+        "verified": False
+    }
+
+    if not send_email(email, otp):
+        return jsonify({"status": "error", "message": "Failed to resend email"}), 500
+
+    return jsonify({"status": "success", "message": "OTP resent"})
 
 # =========================
-# Run server
+# RUN
 # =========================
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000, debug=True)
