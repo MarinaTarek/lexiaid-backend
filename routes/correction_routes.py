@@ -13,13 +13,27 @@ def correct():
         return jsonify({"error": "No text provided"}), 400
 
     corrected = correct_text_t5(text)
-    corrections = get_corrections(text, corrected)
+    raw_corrections = get_corrections(text, corrected)
+    corrections = [
+        {
+            "text": item["wrong"],
+            "correction": item["suggestion"],
+            "wrong": item["wrong"],
+            "suggestion": item["suggestion"],
+        }
+        for item in raw_corrections
+    ]
 
     word_count = len(text.split())
     to_fix = len(corrections)
-    correct_words = word_count - to_fix
+    correct_words = max(word_count - to_fix, 0)
 
-    similarity = (correct_words / word_count * 100) if word_count > 0 else 0
+    similarity = round((correct_words / word_count * 100), 2) if word_count > 0 else 0
+    rating = (
+        "Excellent" if similarity >= 80 else
+        "Good" if similarity >= 50 else
+        "Needs Improvement"
+    )
 
     return jsonify({
         "input": text,
@@ -28,5 +42,7 @@ def correct():
         "word_count": word_count,
         "correct_words": correct_words,
         "to_fix": to_fix,
-        "similarity": similarity
+        "similarity": similarity,
+        "score": similarity,
+        "rating": rating,
     })

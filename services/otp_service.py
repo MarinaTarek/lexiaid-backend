@@ -1,6 +1,6 @@
 import random
 from datetime import datetime, timedelta
-from db import cursor, conn
+from db import get_cursor
 import smtplib
 from email.mime.text import MIMEText
 from config import GMAIL_EMAIL, GMAIL_APP_PASSWORD
@@ -41,9 +41,11 @@ def generate_otp():
 # SAVE OTP
 # =========================
 def save_otp(email):
+    email = email.strip().lower()
     otp = generate_otp()
     expiry = datetime.utcnow() + timedelta(minutes=5)
 
+    cursor, conn = get_cursor()
     cursor.execute("""
         UPDATE users 
         SET otp=%s, otp_expiry=%s 
@@ -51,6 +53,8 @@ def save_otp(email):
     """, (otp, expiry, email))
 
     conn.commit()
+    cursor.close()
+    conn.close()
 
     send_email_otp(email, otp)
 
@@ -61,6 +65,7 @@ def save_otp(email):
 # VERIFY OTP (SAFE CHECK)
 # =========================
 def verify_otp(email, otp):
+    cursor, conn = get_cursor()
     cursor.execute("""
         SELECT otp, otp_expiry 
         FROM users 
@@ -68,6 +73,8 @@ def verify_otp(email, otp):
     """, (email,))
 
     result = cursor.fetchone()
+    cursor.close()
+    conn.close()
 
     if not result:
         return False, "Email not found"

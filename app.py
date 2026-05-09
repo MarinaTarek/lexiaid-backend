@@ -5,6 +5,8 @@ from flask_cors import CORS
 from routes.auth_routes import auth
 from routes.voice_routes import voice
 from routes.correction_routes import correction_bp
+from routes.reading_routes import reading_bp          # ← new
+from routes.progress_routes import progress_bp
 
 app = Flask(__name__)
 CORS(app)
@@ -13,6 +15,8 @@ CORS(app)
 app.register_blueprint(auth)
 app.register_blueprint(voice)
 app.register_blueprint(correction_bp)
+app.register_blueprint(reading_bp)   
+app.register_blueprint(progress_bp)# ← new
 
 
 @app.route("/")
@@ -21,4 +25,4 @@ def home():
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000)
